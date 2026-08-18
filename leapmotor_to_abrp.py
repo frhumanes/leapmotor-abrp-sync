@@ -125,14 +125,7 @@ def build_payload(data: dict) -> dict:
 
     # The normalized summary omits the charging flag; read it from the raw
     # signal block. Signal 1939 = charge status code (1 = charging).
-    raw_signal: dict = {}
-    try:
-        status_body = (
-            data.get("requests", {}).get("vehicle_status", {}).get("body", "{}")
-        )
-        raw_signal = json.loads(status_body).get("data", {}).get("signal", {})
-    except (json.JSONDecodeError, AttributeError):
-        pass
+    raw_signal = extract_signal(data)
     raw_charge_status = raw_signal.get("1939")
     is_charging = raw_charge_status == 1 if raw_charge_status is not None else None
 
@@ -151,6 +144,51 @@ def build_payload(data: dict) -> dict:
     }
     # Drop unknown fields so ABRP keeps its previous/estimated values.
     return {k: v for k, v in payload.items() if v is not None}
+
+
+# Signals carrying location; redacted from diagnostic dumps so they can be
+# shared safely.
+LOCATION_SIGNALS = {"3724", "3725", "2190", "2191"}
+
+
+def extract_signal(data: dict) -> dict:
+    """Return the raw signal dict from a vehicle summary response."""
+    try:
+        status_body = (
+            data.get("requests", {}).get("vehicle_status", {}).get("body", "{}")
+        )
+        return json.loads(status_body).get("data", {}).get("signal", {}) or {}
+    except (json.JSONDecodeError, AttributeError):
+        return {}
+
+
+def dump_signals(vin: str) -> int:
+    """Print the raw signals (GPS redacted) and the derived state, for debugging."""
+    data = run_client("direct-login-vehicle-summary", "--vin", vin)
+    if not data:
+        log("no data from client; cannot dump")
+        return 1
+    payload = build_payload(data)
+    raw_signal = extract_signal(data)
+    redacted = {
+        k: ("<redacted>" if k in LOCATION_SIGNALS else v)
+        for k, v in sorted(raw_signal.items())
+    }
+    print(
+        json.dumps(
+            {
+                "derived_state": classify_state(payload),
+                "is_charging (from signal 1939)": payload.get("is_charging"),
+                "is_parked (from signal 1298)": payload.get("is_parked"),
+                "signal_1939": raw_signal.get("1939"),
+                "battery_percent (1204)": raw_signal.get("1204"),
+                "all_signals_gps_redacted": redacted,
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    return 0
 
 
 def classify_state(payload: dict) -> str:
@@ -230,6 +268,11 @@ def main() -> int:
     parser.add_argument(
         "--once", action="store_true", help="Run a single cycle and exit (cron/testing)"
     )
+    parser.add_argument(
+        "--dump",
+        action="store_true",
+        help="Print raw signals (GPS redacted) and the derived state, then exit",
+    )
     args = parser.parse_args()
 
     # Never poll faster than 30s: each cycle is a full login against an
@@ -251,7 +294,7 @@ def main() -> int:
 
     if not os.environ.get("LEAPMOTOR_USERNAME") or not os.environ.get("LEAPMOTOR_PASSWORD"):
         parser.error("Leapmotor credentials required (--username/--password or env vars)")
-    if not abrp_token:
+    if not abrp_token and not args.dump:
         parser.error("--abrp-token or ABRP_TOKEN env var is required")
 
     ensure_certs()
@@ -271,6 +314,9 @@ def main() -> int:
         if not vin:
             log("no vehicle found in account; giving up")
             return 1
+    if args.dump:
+        return dump_signals(vin)
+
     log(
         f"using VIN ***{vin[-4:]} (adaptive: drive {intervals['driving']}s / "
         f"charge {intervals['charging']}s / parked {intervals['parked']}s)"
