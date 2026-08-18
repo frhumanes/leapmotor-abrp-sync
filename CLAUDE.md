@@ -107,11 +107,17 @@ layout but nothing here runs inside HA.
 
 Telemetry mapping (`build_payload` in `leapmotor_to_abrp.py`): the client's
 `direct-login-vehicle-summary` returns a normalized `summary` block plus raw `requests`.
-Charging state comes from raw signal `1939` (1 = charging), which the normalized summary
-omits. The ABRP payload strips `None` fields before POSTing to
+The ABRP payload strips `None` fields before POSTing to
 `https://api.iternio.com/1/tlm/send`, so unknown values are simply not sent (ABRP keeps its
 last/estimated value). `ext_temp` is deliberately **not** sent: Leapmotor only exposes
 interior (cabin) temperature, and feeding that as outside temp corrupts ABRP's range model.
+
+Charging is **inferred from the SoC trend across cycles** (rising SoC = charging), not from
+a raw signal: the old signal `1939` guess reads `1` while parked and not charging on at
+least some vehicles, so it is unused. `fetch_and_push` threads the previous SoC through the
+loop and sets `is_charging`; because that needs a baseline, `--once` never reports charging.
+`--dump` prints the raw signal block (GPS signals `2`/`3`/`3724`/`3725`/`2190`/`2191`
+redacted) to help identify the real charging signal.
 
 `classify_state()` turns `is_parked`/`is_charging` into driving/charging/parked/unknown,
 which selects an adaptive push interval (`--drive-interval` 180s / `--charge-interval` 300s /

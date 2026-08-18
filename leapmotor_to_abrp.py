@@ -118,16 +118,16 @@ def detect_vin() -> str | None:
 
 
 def build_payload(data: dict) -> dict:
-    """Map a vehicle summary response to an ABRP telemetry payload."""
+    """Map a vehicle summary response to an ABRP telemetry payload.
+
+    `is_charging` is intentionally NOT derived here: the raw signal 1939 that
+    older code used is unreliable (reads 1 while parked and not charging on at
+    least some vehicles). The caller sets `is_charging` from the SoC trend
+    across cycles, which is vehicle-agnostic. See fetch_and_push().
+    """
     summary = data.get("summary", {})
     status = summary.get("status", {})
     location = summary.get("location", {})
-
-    # The normalized summary omits the charging flag; read it from the raw
-    # signal block. Signal 1939 = charge status code (1 = charging).
-    raw_signal = extract_signal(data)
-    raw_charge_status = raw_signal.get("1939")
-    is_charging = raw_charge_status == 1 if raw_charge_status is not None else None
 
     payload = {
         "utc": int(time.time()),
@@ -135,7 +135,6 @@ def build_payload(data: dict) -> dict:
         "is_parked": status.get("is_parked"),
         "lat": location.get("latitude"),
         "lon": location.get("longitude"),
-        "is_charging": is_charging,
         "odometer": status.get("odometer_km"),
         # ext_temp is intentionally NOT sent: Leapmotor only exposes interior
         # (cabin) temperature, and ABRP uses ext_temp for consumption/range
@@ -147,8 +146,8 @@ def build_payload(data: dict) -> dict:
 
 
 # Signals carrying location; redacted from diagnostic dumps so they can be
-# shared safely.
-LOCATION_SIGNALS = {"3724", "3725", "2190", "2191"}
+# shared safely. "2"/"3" are the raw lon/lat and must be redacted too.
+LOCATION_SIGNALS = {"2", "3", "3724", "3725", "2190", "2191"}
 
 
 def extract_signal(data: dict) -> dict:
@@ -177,10 +176,13 @@ def dump_signals(vin: str) -> int:
     print(
         json.dumps(
             {
-                "derived_state": classify_state(payload),
-                "is_charging (from signal 1939)": payload.get("is_charging"),
+                "derived_state (snapshot)": classify_state(payload),
+                "note": (
+                    "charging is inferred from the SoC trend across cycles, "
+                    "not from a single snapshot; signal 1939 is unreliable"
+                ),
                 "is_parked (from signal 1298)": payload.get("is_parked"),
-                "signal_1939": raw_signal.get("1939"),
+                "signal_1939_raw": raw_signal.get("1939"),
                 "battery_percent (1204)": raw_signal.get("1204"),
                 "all_signals_gps_redacted": redacted,
             },
@@ -207,20 +209,33 @@ def classify_state(payload: dict) -> str:
     return "unknown"
 
 
-def fetch_and_push(vin: str, abrp_token: str) -> tuple[bool, str]:
+def fetch_and_push(
+    vin: str, abrp_token: str, prev_soc: int | None
+) -> tuple[bool, str, int | None]:
     """Fetch one telemetry sample and push it to ABRP.
 
-    Returns (success, state) where state feeds the adaptive interval.
+    Charging is inferred from the SoC trend: once we have a previous reading,
+    a rising SoC means charging, a flat/falling SoC means not charging. Returns
+    (success, state, latest_soc) so the caller can throttle and keep the trend.
     """
     data = run_client("direct-login-vehicle-summary", "--vin", vin)
     if not data:
-        return False, "unknown"
+        return False, "unknown", prev_soc
 
     payload = build_payload(data)
+    soc = payload.get("soc")
+
+    # Only assert a charging state once we have a baseline to compare against;
+    # otherwise leave it unknown (omitted) so ABRP keeps its last value.
+    if soc is not None and prev_soc is not None:
+        payload["is_charging"] = soc > prev_soc
+
     state = classify_state(payload)
-    if payload.get("soc") is None:
+    latest_soc = soc if soc is not None else prev_soc
+
+    if soc is None:
         log("no SoC in response; skipping push this cycle")
-        return False, state
+        return False, state, latest_soc
 
     try:
         resp = requests.post(
@@ -231,14 +246,14 @@ def fetch_and_push(vin: str, abrp_token: str) -> tuple[bool, str]:
         )
     except requests.RequestException as exc:
         log(f"ABRP request failed: {exc}")
-        return False, state
+        return False, state, latest_soc
 
     if resp.status_code == 200:
         charging = " (charging)" if payload.get("is_charging") else ""
-        log(f"pushed to ABRP: SoC {payload['soc']}% [{state}]{charging}")
-        return True, state
+        log(f"pushed to ABRP: SoC {soc}% [{state}]{charging}")
+        return True, state, latest_soc
     log(f"ABRP rejected push: {resp.status_code} {resp.text.strip()}")
-    return False, state
+    return False, state, latest_soc
 
 
 def main() -> int:
@@ -322,9 +337,10 @@ def main() -> int:
         f"charge {intervals['charging']}s / parked {intervals['parked']}s)"
     )
 
+    prev_soc: int | None = None
     failures = 0
     while True:
-        ok, state = fetch_and_push(vin, abrp_token)
+        ok, state, prev_soc = fetch_and_push(vin, abrp_token, prev_soc)
         if args.once:
             return 0 if ok else 1
         if ok:
