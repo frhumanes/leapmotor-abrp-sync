@@ -1,48 +1,54 @@
-import os
-import sys
-import subprocess
-import time
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+"""Render.com / Docker entrypoint.
 
-def download_certs():
-    import urllib.request
-    os.makedirs("custom_components/leapmotor", exist_ok=True)
-    if not os.path.exists("custom_components/leapmotor/app_cert.pem"):
-        print("Lade Zertifikate herunter...", flush=True)
-        urllib.request.urlretrieve("https://raw.githubusercontent.com/markoceri/leapmotor-certs/5d687448c11dd2253669d1c55710e688313d1e2b/app.crt", "custom_components/leapmotor/app_cert.pem")
-        urllib.request.urlretrieve("https://raw.githubusercontent.com/markoceri/leapmotor-certs/5d687448c11dd2253669d1c55710e688313d1e2b/app.key", "custom_components/leapmotor/app_key.pem")
+Runs the ABRP sync loop in a background thread and serves a tiny HTTP
+endpoint so Render's health check (and Docker's HEALTHCHECK) sees the
+service as up. For a native install (systemd), run leapmotor_to_abrp.py
+directly instead -- this web server is only needed by Render's free tier.
+"""
+import os
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from leapmotor_to_abrp import ensure_certs
+
 
 def run_sync():
-    download_certs()
-    print("Starte ABRP Sync Loop (5-Minuten-Takt)...", flush=True)
+    ensure_certs()
+    print("Starting ABRP sync loop (5-minute interval)...", flush=True)
     while True:
+        # leapmotor_to_abrp.py runs its own resilient interval loop; if it
+        # ever exits, supervise it by restarting after a short pause.
         subprocess.run(
-            [sys.executable, "leapmotor_to_abrp.py", "--once"],
-            check=False,
-            env=os.environ.copy()
+            [sys.executable, "leapmotor_to_abrp.py", "--interval", "300"],
+            env=os.environ.copy(),
         )
-        time.sleep(300)
+        print("Sync process exited unexpectedly; restarting in 30s...", flush=True)
+        time.sleep(30)
+
 
 class DummyHandler(BaseHTTPRequestHandler):
-    def do_HEAD(self):
+    def _ok(self):
         self.send_response(200)
-        self.send_header('Content-type', 'text/html')
+        self.send_header("Content-type", "text/html")
         self.end_headers()
+
+    def do_HEAD(self):
+        self._ok()
 
     def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html')
-        self.end_headers()
+        self._ok()
         self.wfile.write(b"Leapmotor ABRP Sync is active!")
 
-if __name__ == '__main__':
-    # Starte den Sync in einem separaten Hintergrund-Thread
-    t = threading.Thread(target=run_sync, daemon=True)
-    t.start()
-    
-    # Starte einen Dummy-Webserver, damit Render den Service als "Gesund" einstuft
+    def log_message(self, *args):  # silence per-request access logs
+        pass
+
+
+if __name__ == "__main__":
+    threading.Thread(target=run_sync, daemon=True).start()
+
     port = int(os.environ.get("PORT", 10000))
-    print(f"Starte Dummy-Webserver auf Port {port}...", flush=True)
-    server = HTTPServer(('0.0.0.0', port), DummyHandler)
-    server.serve_forever()
+    print(f"Starting keep-alive web server on port {port}...", flush=True)
+    HTTPServer(("0.0.0.0", port), DummyHandler).serve_forever()

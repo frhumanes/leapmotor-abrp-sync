@@ -1,0 +1,25 @@
+[Unit]
+Description=Leapmotor -> ABRP telemetry bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=leapmotor
+WorkingDirectory=/opt/leapmotor-abrp-sync
+EnvironmentFile=/etc/leapmotor-abrp.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/leapmotor-abrp-sync/.venv/bin/python leapmotor_to_abrp.py --interval 300
+Restart=always
+RestartSec=30
+
+# Basic hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Certificates are cached here on first run
+ReadWritePaths=/opt/leapmotor-abrp-sync/custom_components/leapmotor
+
+[Install]
+WantedBy=multi-user.target
