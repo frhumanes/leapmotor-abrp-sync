@@ -23,7 +23,10 @@ apt-get install -y git python3-venv curl openssl
 
 echo ">> Fetching source into ${INSTALL_DIR}..."
 if [ -d "${INSTALL_DIR}/.git" ]; then
-  git -C "${INSTALL_DIR}" pull --ff-only
+  # -c safe.directory avoids git's "dubious ownership" error when an older
+  # install left the tree owned by the service user; ownership is normalized
+  # to root further down.
+  git -c safe.directory="${INSTALL_DIR}" -C "${INSTALL_DIR}" pull --ff-only
 else
   git clone "${REPO_URL}" "${INSTALL_DIR}"
 fi
