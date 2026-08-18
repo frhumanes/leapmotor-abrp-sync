@@ -88,6 +88,41 @@ zugänglich sein.
 
 Der Container lädt sich automatisch die nötigen Zertifikate und schickt Deine Daten im 5-Minuten-Takt an ABRP.
 
+### Nativ ohne Docker (Raspberry Pi / DietPi / Debian)
+
+Auf einem ressourcenschonenden System (z.B. DietPi) lohnt sich der Docker-Overhead
+nicht. Der mitgelieferte Installer richtet stattdessen ein Python-`venv` und einen
+`systemd`-Dienst ein:
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/frhumanes/leapmotor-abrp-sync/main/deploy/install.sh)"
+```
+
+Der Installer installiert die Abhängigkeiten (`git`, `python3-venv`, `curl`, `openssl`),
+klont das Projekt nach `/opt/leapmotor-abrp-sync`, legt einen Dienst-Benutzer an und lädt
+die Zertifikate einmalig herunter. Danach:
+
+```bash
+sudo nano /etc/leapmotor-abrp.env          # Deine drei Werte eintragen (Zweit-Account!)
+sudo systemctl enable --now leapmotor-abrp.service
+journalctl -u leapmotor-abrp -f            # sollte alle ~5 Min "pushed to ABRP: SoC XX%" zeigen
+```
+
+**Einmaliger Testlauf** (ohne den Dienst zu starten):
+
+```bash
+cd /opt/leapmotor-abrp-sync
+sudo -u leapmotor bash -c 'set -a; . /etc/leapmotor-abrp.env; set +a; \
+  .venv/bin/python leapmotor_to_abrp.py --once'
+```
+
+**Intervall ändern:** Passe `--interval <Sekunden>` in
+`/etc/systemd/system/leapmotor-abrp.service` an (Standard: 300). Da jeder Zyklus einen
+vollständigen Login durchführt, ist bei überwiegend geparktem Fahrzeug ein größeres
+Intervall (z.B. 600) schonender für die Leapmotor-API.
+
+Updates: `cd /opt/leapmotor-abrp-sync && sudo git pull && sudo systemctl restart leapmotor-abrp`.
+
 ---
 
 ## Sicherheit & Privatsphäre
@@ -189,6 +224,40 @@ and a local image build are not required. Credentials are stored as plain text
 in the project configuration and should only be accessible to NAS administrators.
 
 The container will automatically download the necessary certificates and push your data to ABRP every 5 minutes.
+
+### Native without Docker (Raspberry Pi / DietPi / Debian)
+
+On a lightweight box (e.g. DietPi) the Docker overhead isn't worth it. The bundled
+installer sets up a Python `venv` and a `systemd` service instead:
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/frhumanes/leapmotor-abrp-sync/main/deploy/install.sh)"
+```
+
+The installer pulls the dependencies (`git`, `python3-venv`, `curl`, `openssl`), clones the
+project to `/opt/leapmotor-abrp-sync`, creates a service user, and downloads the
+certificates once. Then:
+
+```bash
+sudo nano /etc/leapmotor-abrp.env          # enter your three values (use a secondary account!)
+sudo systemctl enable --now leapmotor-abrp.service
+journalctl -u leapmotor-abrp -f            # should log "pushed to ABRP: SoC XX%" every ~5 min
+```
+
+**One-off test run** (without starting the service):
+
+```bash
+cd /opt/leapmotor-abrp-sync
+sudo -u leapmotor bash -c 'set -a; . /etc/leapmotor-abrp.env; set +a; \
+  .venv/bin/python leapmotor_to_abrp.py --once'
+```
+
+**Change the interval:** edit `--interval <seconds>` in
+`/etc/systemd/system/leapmotor-abrp.service` (default: 300). Because every cycle performs a
+full login, a larger interval (e.g. 600) is gentler on the Leapmotor API when the car is
+mostly parked.
+
+Updates: `cd /opt/leapmotor-abrp-sync && sudo git pull && sudo systemctl restart leapmotor-abrp`.
 
 ---
 
