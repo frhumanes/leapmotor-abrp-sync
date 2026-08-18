@@ -107,6 +107,11 @@ omits. The ABRP payload strips `None` fields before POSTing to
 last/estimated value). `ext_temp` is deliberately **not** sent: Leapmotor only exposes
 interior (cabin) temperature, and feeding that as outside temp corrupts ABRP's range model.
 
+`classify_state()` turns `is_parked`/`is_charging` into driving/charging/parked/unknown,
+which selects an adaptive push interval (`--drive-interval` 60s / `--charge-interval` 300s /
+`--interval` 300s for parked & unknown), floored at 30s. The state is derived from the
+telemetry already fetched each cycle, so throttling costs no extra API calls.
+
 ## Conventions & constraints
 
 - Never re-introduce remote-control (unlock, climate, etc.) functionality — read-only is a

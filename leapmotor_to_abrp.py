@@ -153,16 +153,36 @@ def build_payload(data: dict) -> dict:
     return {k: v for k, v in payload.items() if v is not None}
 
 
-def fetch_and_push(vin: str, abrp_token: str) -> bool:
-    """Fetch one telemetry sample and push it to ABRP. Returns success."""
+def classify_state(payload: dict) -> str:
+    """Derive the vehicle state used for adaptive throttling.
+
+    Returns one of: 'driving', 'charging', 'parked', 'unknown'. Works off the
+    already-filtered payload, where a missing key means the value was unknown.
+    """
+    if payload.get("is_charging"):
+        return "charging"
+    is_parked = payload.get("is_parked")
+    if is_parked is False:
+        return "driving"
+    if is_parked is True:
+        return "parked"
+    return "unknown"
+
+
+def fetch_and_push(vin: str, abrp_token: str) -> tuple[bool, str]:
+    """Fetch one telemetry sample and push it to ABRP.
+
+    Returns (success, state) where state feeds the adaptive interval.
+    """
     data = run_client("direct-login-vehicle-summary", "--vin", vin)
     if not data:
-        return False
+        return False, "unknown"
 
     payload = build_payload(data)
+    state = classify_state(payload)
     if payload.get("soc") is None:
         log("no SoC in response; skipping push this cycle")
-        return False
+        return False, state
 
     try:
         resp = requests.post(
@@ -173,14 +193,14 @@ def fetch_and_push(vin: str, abrp_token: str) -> bool:
         )
     except requests.RequestException as exc:
         log(f"ABRP request failed: {exc}")
-        return False
+        return False, state
 
     if resp.status_code == 200:
         charging = " (charging)" if payload.get("is_charging") else ""
-        log(f"pushed to ABRP: SoC {payload['soc']}%{charging}")
-        return True
+        log(f"pushed to ABRP: SoC {payload['soc']}% [{state}]{charging}")
+        return True, state
     log(f"ABRP rejected push: {resp.status_code} {resp.text.strip()}")
-    return False
+    return False, state
 
 
 def main() -> int:
@@ -190,12 +210,36 @@ def main() -> int:
     parser.add_argument("--username", help="Leapmotor username (or LEAPMOTOR_USERNAME)")
     parser.add_argument("--password", help="Leapmotor password (or LEAPMOTOR_PASSWORD)")
     parser.add_argument(
-        "--interval", type=int, default=300, help="Seconds between pushes (default 300)"
+        "--interval",
+        type=int,
+        default=300,
+        help="Seconds between pushes while parked / when state is unknown (default 300)",
+    )
+    parser.add_argument(
+        "--drive-interval",
+        type=int,
+        default=60,
+        help="Seconds between pushes while the car is moving (default 60)",
+    )
+    parser.add_argument(
+        "--charge-interval",
+        type=int,
+        default=300,
+        help="Seconds between pushes while charging (default 300)",
     )
     parser.add_argument(
         "--once", action="store_true", help="Run a single cycle and exit (cron/testing)"
     )
     args = parser.parse_args()
+
+    # Never poll faster than 30s: each cycle is a full login against an
+    # unofficial API, so keep a floor even if the user asks for less.
+    intervals = {
+        "driving": max(30, args.drive_interval),
+        "charging": max(30, args.charge_interval),
+        "parked": max(30, args.interval),
+        "unknown": max(30, args.interval),
+    }
 
     # leapmotor_client.py reads credentials from the environment; export any
     # values passed on the CLI so the subprocess sees them.
@@ -227,21 +271,25 @@ def main() -> int:
         if not vin:
             log("no vehicle found in account; giving up")
             return 1
-    log(f"using VIN ***{vin[-4:]} (interval {args.interval}s)")
+    log(
+        f"using VIN ***{vin[-4:]} (adaptive: drive {intervals['driving']}s / "
+        f"charge {intervals['charging']}s / parked {intervals['parked']}s)"
+    )
 
     failures = 0
     while True:
-        ok = fetch_and_push(vin, abrp_token)
+        ok, state = fetch_and_push(vin, abrp_token)
         if args.once:
             return 0 if ok else 1
         if ok:
             failures = 0
-            time.sleep(args.interval)
+            delay = intervals[state]
+            time.sleep(delay)
         else:
             failures += 1
             # Retry sooner than the normal interval on transient failures,
-            # backing off up to the interval on repeated errors.
-            delay = min(30 * failures, args.interval)
+            # backing off up to the parked interval on repeated errors.
+            delay = min(30 * failures, intervals["parked"])
             log(f"cycle failed ({failures} in a row); next attempt in {delay}s")
             time.sleep(delay)
 

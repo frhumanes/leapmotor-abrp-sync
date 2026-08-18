@@ -116,10 +116,18 @@ sudo -u leapmotor bash -c 'set -a; . /etc/leapmotor-abrp.env; set +a; \
   .venv/bin/python leapmotor_to_abrp.py --once'
 ```
 
-**Intervall ändern:** Passe `--interval <Sekunden>` in
-`/etc/systemd/system/leapmotor-abrp.service` an (Standard: 300). Da jeder Zyklus einen
-vollständigen Login durchführt, ist bei überwiegend geparktem Fahrzeug ein größeres
-Intervall (z.B. 600) schonender für die Leapmotor-API.
+**Adaptives Intervall:** Das Skript erkennt den Fahrzeugzustand und passt die Frequenz
+automatisch an — häufiger während der Fahrt, seltener im Stand:
+
+| Zustand | Standard-Intervall | Flag |
+|---|---|---|
+| Fahrt (`is_parked = false`) | 60 s | `--drive-interval` |
+| Laden | 300 s | `--charge-interval` |
+| Geparkt / unbekannt | 300 s | `--interval` |
+
+Passe die Werte bei Bedarf in `/etc/systemd/system/leapmotor-abrp.service` an. Da jeder
+Zyklus einen vollständigen Login durchführt, ist bei überwiegend geparktem Fahrzeug ein
+größeres `--interval` (z.B. 900) schonender für die Leapmotor-API. Untergrenze: 30 s.
 
 Updates: `cd /opt/leapmotor-abrp-sync && sudo git pull && sudo systemctl restart leapmotor-abrp`.
 
@@ -252,10 +260,18 @@ sudo -u leapmotor bash -c 'set -a; . /etc/leapmotor-abrp.env; set +a; \
   .venv/bin/python leapmotor_to_abrp.py --once'
 ```
 
-**Change the interval:** edit `--interval <seconds>` in
-`/etc/systemd/system/leapmotor-abrp.service` (default: 300). Because every cycle performs a
-full login, a larger interval (e.g. 600) is gentler on the Leapmotor API when the car is
-mostly parked.
+**Adaptive interval:** the script detects the vehicle state and throttles automatically —
+more often while driving, less often while parked:
+
+| State | Default interval | Flag |
+|---|---|---|
+| Driving (`is_parked = false`) | 60 s | `--drive-interval` |
+| Charging | 300 s | `--charge-interval` |
+| Parked / unknown | 300 s | `--interval` |
+
+Adjust the values in `/etc/systemd/system/leapmotor-abrp.service` if you like. Because every
+cycle performs a full login, a larger `--interval` (e.g. 900) is gentler on the Leapmotor
+API when the car is mostly parked. Minimum floor: 30 s.
 
 Updates: `cd /opt/leapmotor-abrp-sync && sudo git pull && sudo systemctl restart leapmotor-abrp`.
 
