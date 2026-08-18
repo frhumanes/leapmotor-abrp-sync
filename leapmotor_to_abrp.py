@@ -212,14 +212,14 @@ def main() -> int:
     parser.add_argument(
         "--interval",
         type=int,
-        default=300,
-        help="Seconds between pushes while parked / when state is unknown (default 300)",
+        default=900,
+        help="Seconds between pushes while parked / when state is unknown (default 900)",
     )
     parser.add_argument(
         "--drive-interval",
         type=int,
-        default=60,
-        help="Seconds between pushes while the car is moving (default 60)",
+        default=180,
+        help="Seconds between pushes while the car is moving (default 180)",
     )
     parser.add_argument(
         "--charge-interval",

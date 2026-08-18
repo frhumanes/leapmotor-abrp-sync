@@ -121,13 +121,28 @@ automatisch an — häufiger während der Fahrt, seltener im Stand:
 
 | Zustand | Standard-Intervall | Flag |
 |---|---|---|
-| Fahrt (`is_parked = false`) | 60 s | `--drive-interval` |
+| Fahrt (`is_parked = false`) | 180 s | `--drive-interval` |
 | Laden | 300 s | `--charge-interval` |
-| Geparkt / unbekannt | 300 s | `--interval` |
+| Geparkt / unbekannt | 900 s | `--interval` |
 
-Passe die Werte bei Bedarf in `/etc/systemd/system/leapmotor-abrp.service` an. Da jeder
-Zyklus einen vollständigen Login durchführt, ist bei überwiegend geparktem Fahrzeug ein
-größeres `--interval` (z.B. 900) schonender für die Leapmotor-API. Untergrenze: 30 s.
+Zum Anpassen die Flags im `ExecStart` von `/etc/systemd/system/leapmotor-abrp.service`
+setzen (Untergrenze: 30 s). Da jeder Zyklus einen vollständigen Login durchführt, hält das
+lange Parkintervall die Last auf der Leapmotor-API gering.
+
+### Updates einspielen
+
+```bash
+sudo /opt/leapmotor-abrp-sync/deploy/update.sh
+```
+
+Das holt den neuesten Stand (`git pull`), synchronisiert Abhängigkeiten und Dienst-Unit
+und startet den Dienst neu — ohne Änderungen ein No-Op. Für **automatische** tägliche
+Updates aktiviere den (bei der Installation bereits abgelegten) Timer:
+
+```bash
+sudo systemctl enable --now leapmotor-abrp-update.timer
+systemctl list-timers leapmotor-abrp-update.timer
+```
 
 Updates: `cd /opt/leapmotor-abrp-sync && sudo git pull && sudo systemctl restart leapmotor-abrp`.
 
@@ -265,13 +280,28 @@ more often while driving, less often while parked:
 
 | State | Default interval | Flag |
 |---|---|---|
-| Driving (`is_parked = false`) | 60 s | `--drive-interval` |
+| Driving (`is_parked = false`) | 180 s | `--drive-interval` |
 | Charging | 300 s | `--charge-interval` |
-| Parked / unknown | 300 s | `--interval` |
+| Parked / unknown | 900 s | `--interval` |
 
-Adjust the values in `/etc/systemd/system/leapmotor-abrp.service` if you like. Because every
-cycle performs a full login, a larger `--interval` (e.g. 900) is gentler on the Leapmotor
-API when the car is mostly parked. Minimum floor: 30 s.
+To adjust, set the flags in the `ExecStart` of
+`/etc/systemd/system/leapmotor-abrp.service` (minimum floor: 30 s). Because every cycle
+performs a full login, the long parked interval keeps load on the Leapmotor API low.
+
+### Applying updates
+
+```bash
+sudo /opt/leapmotor-abrp-sync/deploy/update.sh
+```
+
+This pulls the latest code (`git pull`), syncs dependencies and the service unit, and
+restarts the service — a no-op when there is nothing new. For **automatic** daily updates,
+enable the timer (already installed by the installer):
+
+```bash
+sudo systemctl enable --now leapmotor-abrp-update.timer
+systemctl list-timers leapmotor-abrp-update.timer
+```
 
 Updates: `cd /opt/leapmotor-abrp-sync && sudo git pull && sudo systemctl restart leapmotor-abrp`.
 

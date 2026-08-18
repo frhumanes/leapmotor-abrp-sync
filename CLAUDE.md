@@ -72,7 +72,13 @@ Three supported targets:
   and installs `deploy/leapmotor-abrp.service`, which runs `leapmotor_to_abrp.py
   --interval 300` directly (no web server). This is the recommended target for an
   always-on small box (Raspberry Pi / DietPi); `leapmotor_to_abrp.py`'s own loop handles
-  retries/backoff, so systemd only needs `Restart=always` as a backstop.
+  retries/backoff, so systemd only needs `Restart=always` as a backstop. Least privilege:
+  code and venv stay root-owned; only the cert cache dir (`custom_components/leapmotor`) and
+  `/etc/leapmotor-abrp.env` are owned by the `leapmotor` service user. Updates run via
+  `deploy/update.sh` (idempotent pull + dep/unit sync + restart; auto-detects the checkout
+  owner so it works whether the tree is root- or user-owned). `deploy/install.sh` also
+  installs `leapmotor-abrp-update.{service,timer}` for opt-in daily auto-updates (left
+  disabled).
 
 ## Architecture notes
 
@@ -108,9 +114,10 @@ last/estimated value). `ext_temp` is deliberately **not** sent: Leapmotor only e
 interior (cabin) temperature, and feeding that as outside temp corrupts ABRP's range model.
 
 `classify_state()` turns `is_parked`/`is_charging` into driving/charging/parked/unknown,
-which selects an adaptive push interval (`--drive-interval` 60s / `--charge-interval` 300s /
-`--interval` 300s for parked & unknown), floored at 30s. The state is derived from the
-telemetry already fetched each cycle, so throttling costs no extra API calls.
+which selects an adaptive push interval (`--drive-interval` 180s / `--charge-interval` 300s /
+`--interval` 900s for parked & unknown), floored at 30s. The state is derived from the
+telemetry already fetched each cycle, so throttling costs no extra API calls. The systemd
+unit passes no interval flags, so these defaults apply unless overridden in `ExecStart`.
 
 ## Conventions & constraints
 

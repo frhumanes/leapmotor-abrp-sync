@@ -1,0 +1,8 @@
+[Unit]
+Description=Update the Leapmotor -> ABRP bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/leapmotor-abrp-sync/deploy/update.sh

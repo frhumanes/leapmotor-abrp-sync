@@ -37,7 +37,14 @@ echo ">> Creating service user '${SERVICE_USER}'..."
 id -u "${SERVICE_USER}" >/dev/null 2>&1 || \
   useradd --system --no-create-home --shell /usr/sbin/nologin "${SERVICE_USER}"
 
-chown -R "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}"
+# Least privilege: the code and venv stay root-owned (the service cannot
+# rewrite its own code). Only the certificate cache -- the one path written at
+# runtime -- is owned by the service user. Re-running normalizes ownership if
+# an older install had chown'd the whole tree.
+chown -R root:root "${INSTALL_DIR}"
+CERT_DIR="${INSTALL_DIR}/custom_components/leapmotor"
+mkdir -p "${CERT_DIR}"
+chown "${SERVICE_USER}:${SERVICE_USER}" "${CERT_DIR}"
 
 echo ">> Downloading app certificates (one time)..."
 sudo -u "${SERVICE_USER}" "${INSTALL_DIR}/.venv/bin/python" - <<PY
@@ -61,9 +68,14 @@ ENV
   NEEDS_CREDS=1
 fi
 
-echo ">> Installing systemd service..."
+echo ">> Installing systemd units..."
 install -m 644 "${INSTALL_DIR}/deploy/leapmotor-abrp.service" \
   /etc/systemd/system/leapmotor-abrp.service
+# Auto-update units are installed but left disabled (opt-in).
+install -m 644 "${INSTALL_DIR}/deploy/leapmotor-abrp-update.service" \
+  /etc/systemd/system/leapmotor-abrp-update.service
+install -m 644 "${INSTALL_DIR}/deploy/leapmotor-abrp-update.timer" \
+  /etc/systemd/system/leapmotor-abrp-update.timer
 systemctl daemon-reload
 
 if [ "${NEEDS_CREDS}" = "1" ]; then

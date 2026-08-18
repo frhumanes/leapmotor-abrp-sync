@@ -9,7 +9,10 @@ User=leapmotor
 WorkingDirectory=/opt/leapmotor-abrp-sync
 EnvironmentFile=/etc/leapmotor-abrp.env
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/opt/leapmotor-abrp-sync/.venv/bin/python leapmotor_to_abrp.py --interval 300
+# Adaptive intervals use the script defaults (drive 180s / charge 300s /
+# parked 900s). Override here if you like, e.g. add:
+#   --interval 600 --drive-interval 120 --charge-interval 300
+ExecStart=/opt/leapmotor-abrp-sync/.venv/bin/python leapmotor_to_abrp.py
 Restart=always
 RestartSec=30
 
