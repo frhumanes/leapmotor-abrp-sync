@@ -109,7 +109,11 @@ Telemetry mapping (`build_payload` in `leapmotor_to_abrp.py`): the client's
 `direct-login-vehicle-summary` returns a normalized `summary` block plus raw `requests`.
 The ABRP payload strips `None` fields before POSTing to
 `https://api.iternio.com/1/tlm/send`, so unknown values are simply not sent (ABRP keeps its
-last/estimated value). `ext_temp` is deliberately **not** sent: Leapmotor only exposes
+last/estimated value). The vehicle status is the cloud's **last stored snapshot**, not live data: the car only
+reports while active (charging/driving), and neither polling nor the mobile app wakes it.
+So `utc` is the snapshot time (signal `"1"`, ms; fallback `"sts"`, then now), and
+`fetch_and_push` skips the push when the snapshot is unchanged from the previous cycle.
+`ext_temp` is deliberately **not** sent: Leapmotor only exposes
 interior (cabin) temperature, and feeding that as outside temp corrupts ABRP's range model.
 
 Charging is detected from the **battery current, signal `1178`** (A, negative = into the

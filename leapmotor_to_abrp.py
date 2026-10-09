@@ -131,6 +131,20 @@ def _to_float(value) -> float | None:
         return None
 
 
+def snapshot_time(signal: dict) -> int | None:
+    """Return when the car produced this snapshot, in epoch seconds.
+
+    The API serves the cloud's last stored snapshot, not live data: once the
+    car sleeps it stops reporting and every poll returns the same block.
+    Signal "1" (and "sts" a moment later) is that snapshot's timestamp in ms.
+    """
+    for key in ("1", "sts"):
+        ts = _to_float(signal.get(key))
+        if ts:
+            return int(ts // 1000)
+    return None
+
+
 def build_payload(data: dict) -> dict:
     """Map a vehicle summary response to an ABRP telemetry payload.
 
@@ -159,7 +173,9 @@ def build_payload(data: dict) -> dict:
         is_charging = bool(is_parked) and current < CHARGE_CURRENT_THRESHOLD_A
 
     payload = {
-        "utc": int(time.time()),
+        # Report when the car produced the data, so a stale snapshot is not
+        # presented to ABRP as current. Fall back to now if it is missing.
+        "utc": snapshot_time(signal) or int(time.time()),
         "soc": status.get("battery_percent"),
         "is_parked": is_parked,
         "is_charging": is_charging,
@@ -212,6 +228,9 @@ def dump_signals(vin: str) -> int:
         json.dumps(
             {
                 "derived_state (snapshot)": classify_state(payload),
+                "snapshot_utc (signal 1)": datetime.fromtimestamp(
+                    payload["utc"], timezone.utc
+                ).strftime("%Y-%m-%d %H:%M:%SZ"),
                 "is_parked (from signal 1298)": payload.get("is_parked"),
                 "is_charging (parked and 1178 < "
                 f"{CHARGE_CURRENT_THRESHOLD_A} A)": payload.get("is_charging"),
@@ -243,21 +262,29 @@ def classify_state(payload: dict) -> str:
 
 
 def fetch_and_push(
-    vin: str, abrp_token: str, prev_soc: int | None
-) -> tuple[bool, str, int | None]:
+    vin: str, abrp_token: str, prev_soc: int | None, prev_utc: int | None
+) -> tuple[bool, str, int | None, int | None]:
     """Fetch one telemetry sample and push it to ABRP.
 
     Charging comes from the battery current (see build_payload). Only if that
     signal is missing do we fall back to the SoC trend: once we have a previous
-    reading, a rising SoC means charging. Returns (success, state, latest_soc)
-    so the caller can throttle and keep the trend.
+    reading, a rising SoC means charging. A snapshot identical to the previous
+    one (car asleep) is not pushed again. Returns (success, state, latest_soc,
+    latest_utc) so the caller can throttle and keep the trend.
     """
     data = run_client("direct-login-vehicle-summary", "--vin", vin)
     if not data:
-        return False, "unknown", prev_soc
+        return False, "unknown", prev_soc, prev_utc
 
     payload = build_payload(data)
     soc = payload.get("soc")
+    utc = payload["utc"] if snapshot_time(extract_signal(data)) else None
+
+    if utc is not None and utc == prev_utc:
+        state = classify_state(payload)
+        since = datetime.fromtimestamp(utc, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+        log(f"no new data since {since} (car asleep?); not pushing [{state}]")
+        return True, state, prev_soc, prev_utc
 
     # Fallback: only assert a charging state from the SoC trend once we have a
     # baseline to compare against; otherwise leave it unknown (omitted) so
@@ -270,7 +297,7 @@ def fetch_and_push(
 
     if soc is None:
         log("no SoC in response; skipping push this cycle")
-        return False, state, latest_soc
+        return False, state, latest_soc, prev_utc
 
     try:
         resp = requests.post(
@@ -281,7 +308,7 @@ def fetch_and_push(
         )
     except requests.RequestException as exc:
         log(f"ABRP request failed: {exc}")
-        return False, state, latest_soc
+        return False, state, latest_soc, prev_utc
 
     if resp.status_code == 200:
         charging = (
@@ -290,9 +317,9 @@ def fetch_and_push(
             else " (charging)" if payload.get("is_charging") else ""
         )
         log(f"pushed to ABRP: SoC {soc}% [{state}]{charging}")
-        return True, state, latest_soc
+        return True, state, latest_soc, utc
     log(f"ABRP rejected push: {resp.status_code} {resp.text.strip()}")
-    return False, state, latest_soc
+    return False, state, latest_soc, prev_utc
 
 
 def main() -> int:
@@ -377,9 +404,12 @@ def main() -> int:
     )
 
     prev_soc: int | None = None
+    prev_utc: int | None = None
     failures = 0
     while True:
-        ok, state, prev_soc = fetch_and_push(vin, abrp_token, prev_soc)
+        ok, state, prev_soc, prev_utc = fetch_and_push(
+            vin, abrp_token, prev_soc, prev_utc
+        )
         if args.once:
             return 0 if ok else 1
         if ok:
