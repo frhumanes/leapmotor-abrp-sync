@@ -161,6 +161,11 @@ def build_payload(data: dict) -> dict:
     signal = extract_signal(data)
 
     is_parked = status.get("is_parked")
+    # Signal 100003 is the SoC with one decimal (1204 / battery_percent is
+    # the same value rounded); prefer it for a finer ABRP charge curve.
+    soc = _to_float(signal.get("100003"))
+    if soc is None:
+        soc = status.get("battery_percent")
     voltage = _to_float(signal.get("1177"))
     current = _to_float(signal.get("1178"))
     power = (
@@ -176,7 +181,7 @@ def build_payload(data: dict) -> dict:
         # Report when the car produced the data, so a stale snapshot is not
         # presented to ABRP as current. Fall back to now if it is missing.
         "utc": snapshot_time(signal) or int(time.time()),
-        "soc": status.get("battery_percent"),
+        "soc": soc,
         "is_parked": is_parked,
         "is_charging": is_charging,
         # ABRP convention: positive = power out of the battery, negative =
@@ -262,8 +267,8 @@ def classify_state(payload: dict) -> str:
 
 
 def fetch_and_push(
-    vin: str, abrp_token: str, prev_soc: int | None, prev_utc: int | None
-) -> tuple[bool, str, int | None, int | None]:
+    vin: str, abrp_token: str, prev_soc: float | None, prev_utc: int | None
+) -> tuple[bool, str, float | None, int | None]:
     """Fetch one telemetry sample and push it to ABRP.
 
     Charging comes from the battery current (see build_payload). Only if that
@@ -278,7 +283,8 @@ def fetch_and_push(
 
     payload = build_payload(data)
     soc = payload.get("soc")
-    utc = payload["utc"] if snapshot_time(extract_signal(data)) else None
+    signal = extract_signal(data)
+    utc = payload["utc"] if snapshot_time(signal) else None
 
     if utc is not None and utc == prev_utc:
         state = classify_state(payload)
@@ -311,11 +317,17 @@ def fetch_and_push(
         return False, state, latest_soc, prev_utc
 
     if resp.status_code == 200:
-        charging = (
-            f" (charging {-payload['power']:.1f} kW)"
-            if payload.get("is_charging") and "power" in payload
-            else " (charging)" if payload.get("is_charging") else ""
-        )
+        charging = ""
+        if payload.get("is_charging"):
+            # Signal 1200 is only present while charging and counts down:
+            # minutes until full (not an ABRP field, so log only).
+            details = []
+            if "power" in payload:
+                details.append(f"{-payload['power']:.1f} kW")
+            minutes_to_full = _to_float(signal.get("1200"))
+            if minutes_to_full is not None:
+                details.append(f"~{int(minutes_to_full)} min to full")
+            charging = f" (charging{': ' + ', '.join(details) if details else ''})"
         log(f"pushed to ABRP: SoC {soc}% [{state}]{charging}")
         return True, state, latest_soc, utc
     log(f"ABRP rejected push: {resp.status_code} {resp.text.strip()}")
@@ -403,7 +415,7 @@ def main() -> int:
         f"charge {intervals['charging']}s / parked {intervals['parked']}s)"
     )
 
-    prev_soc: int | None = None
+    prev_soc: float | None = None
     prev_utc: int | None = None
     failures = 0
     while True:
