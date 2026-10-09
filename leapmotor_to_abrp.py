@@ -117,22 +117,57 @@ def detect_vin() -> str | None:
     return None
 
 
+# Battery current (signal 1178) below this while parked means energy is
+# flowing into the pack, i.e. charging. Observed: ~+0.1..0.4 A parked idle,
+# +2.5 A driving, -9.6 A on a ~4 kW home AC charger. The margin keeps idle
+# noise from flapping the state.
+CHARGE_CURRENT_THRESHOLD_A = -1.0
+
+
+def _to_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_payload(data: dict) -> dict:
     """Map a vehicle summary response to an ABRP telemetry payload.
 
-    `is_charging` is intentionally NOT derived here: the raw signal 1939 that
-    older code used is unreliable (reads 1 while parked and not charging on at
-    least some vehicles). The caller sets `is_charging` from the SoC trend
-    across cycles, which is vehicle-agnostic. See fetch_and_push().
+    `is_charging` comes from the battery current (signal 1178, negative when
+    charging) and is only asserted while parked, since regen braking also
+    drives the current negative. The raw signal 1939 that older code used is
+    unreliable (reads 1 while parked and not charging). If the current is
+    missing, `is_charging` is left out and fetch_and_push() falls back to the
+    SoC trend across cycles.
     """
     summary = data.get("summary", {})
     status = summary.get("status", {})
     location = summary.get("location", {})
+    signal = extract_signal(data)
+
+    is_parked = status.get("is_parked")
+    voltage = _to_float(signal.get("1177"))
+    current = _to_float(signal.get("1178"))
+    power = (
+        round(voltage * current / 1000, 2)
+        if voltage is not None and current is not None
+        else None
+    )
+    is_charging = None
+    if current is not None and is_parked is not None:
+        is_charging = bool(is_parked) and current < CHARGE_CURRENT_THRESHOLD_A
 
     payload = {
         "utc": int(time.time()),
         "soc": status.get("battery_percent"),
-        "is_parked": status.get("is_parked"),
+        "is_parked": is_parked,
+        "is_charging": is_charging,
+        # ABRP convention: positive = power out of the battery, negative =
+        # charging, which matches the sign of signal 1178.
+        "power": power,
+        "voltage": voltage,
+        "current": current,
         "lat": location.get("latitude"),
         "lon": location.get("longitude"),
         "odometer": status.get("odometer_km"),
@@ -177,12 +212,10 @@ def dump_signals(vin: str) -> int:
         json.dumps(
             {
                 "derived_state (snapshot)": classify_state(payload),
-                "note": (
-                    "charging is inferred from the SoC trend across cycles, "
-                    "not from a single snapshot; signal 1939 is unreliable"
-                ),
                 "is_parked (from signal 1298)": payload.get("is_parked"),
-                "signal_1939_raw": raw_signal.get("1939"),
+                "is_charging (parked and 1178 < "
+                f"{CHARGE_CURRENT_THRESHOLD_A} A)": payload.get("is_charging"),
+                "power_kw (1177 x 1178)": payload.get("power"),
                 "battery_percent (1204)": raw_signal.get("1204"),
                 "all_signals_gps_redacted": redacted,
             },
@@ -214,9 +247,10 @@ def fetch_and_push(
 ) -> tuple[bool, str, int | None]:
     """Fetch one telemetry sample and push it to ABRP.
 
-    Charging is inferred from the SoC trend: once we have a previous reading,
-    a rising SoC means charging, a flat/falling SoC means not charging. Returns
-    (success, state, latest_soc) so the caller can throttle and keep the trend.
+    Charging comes from the battery current (see build_payload). Only if that
+    signal is missing do we fall back to the SoC trend: once we have a previous
+    reading, a rising SoC means charging. Returns (success, state, latest_soc)
+    so the caller can throttle and keep the trend.
     """
     data = run_client("direct-login-vehicle-summary", "--vin", vin)
     if not data:
@@ -225,9 +259,10 @@ def fetch_and_push(
     payload = build_payload(data)
     soc = payload.get("soc")
 
-    # Only assert a charging state once we have a baseline to compare against;
-    # otherwise leave it unknown (omitted) so ABRP keeps its last value.
-    if soc is not None and prev_soc is not None:
+    # Fallback: only assert a charging state from the SoC trend once we have a
+    # baseline to compare against; otherwise leave it unknown (omitted) so
+    # ABRP keeps its last value.
+    if "is_charging" not in payload and soc is not None and prev_soc is not None:
         payload["is_charging"] = soc > prev_soc
 
     state = classify_state(payload)
@@ -249,7 +284,11 @@ def fetch_and_push(
         return False, state, latest_soc
 
     if resp.status_code == 200:
-        charging = " (charging)" if payload.get("is_charging") else ""
+        charging = (
+            f" (charging {-payload['power']:.1f} kW)"
+            if payload.get("is_charging") and "power" in payload
+            else " (charging)" if payload.get("is_charging") else ""
+        )
         log(f"pushed to ABRP: SoC {soc}% [{state}]{charging}")
         return True, state, latest_soc
     log(f"ABRP rejected push: {resp.status_code} {resp.text.strip()}")

@@ -112,12 +112,14 @@ The ABRP payload strips `None` fields before POSTing to
 last/estimated value). `ext_temp` is deliberately **not** sent: Leapmotor only exposes
 interior (cabin) temperature, and feeding that as outside temp corrupts ABRP's range model.
 
-Charging is **inferred from the SoC trend across cycles** (rising SoC = charging), not from
-a raw signal: the old signal `1939` guess reads `1` while parked and not charging on at
-least some vehicles, so it is unused. `fetch_and_push` threads the previous SoC through the
-loop and sets `is_charging`; because that needs a baseline, `--once` never reports charging.
-`--dump` prints the raw signal block (GPS signals `2`/`3`/`3724`/`3725`/`2190`/`2191`
-redacted) to help identify the real charging signal.
+Charging is detected from the **battery current, signal `1178`** (A, negative = into the
+pack): `is_charging = is_parked and 1178 < CHARGE_CURRENT_THRESHOLD_A` (-1.0 A). It is gated
+on parked because regen also makes the current negative. Verified on a home AC charger:
+-9.6 A charging vs +0.4 A plugged-in-not-charging. `power` (kW, `1177` V × `1178` A / 1000,
+negative when charging per ABRP convention), `voltage` and `current` are sent too. Ruled
+out: `1939` (always `1`) and `1319` (stays `0.0` while charging). If `1178` is missing,
+`fetch_and_push` falls back to the SoC trend across cycles (rising SoC = charging). `--dump`
+prints the raw signal block (GPS signals `2`/`3`/`3724`/`3725`/`2190`/`2191` redacted).
 
 `classify_state()` turns `is_parked`/`is_charging` into driving/charging/parked/unknown,
 which selects an adaptive push interval (`--drive-interval` 180s / `--charge-interval` 300s /
