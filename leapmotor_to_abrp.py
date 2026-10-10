@@ -217,6 +217,51 @@ def extract_signal(data: dict) -> dict:
         return {}
 
 
+def describe_location(raw_signal: dict, payload: dict) -> dict:
+    """Describe the shape of the location signals without revealing them.
+
+    Reports type, sign, integer digits and decimals of each GPS signal, and
+    which ones share the same magnitude, so a wrong mapping (swapped axes,
+    lost sign, scaling) can be diagnosed without exposing coordinates.
+    """
+
+    def shape(value):
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return {"type": type(value).__name__, "numeric": False}
+        text = str(value)
+        decimals = len(text.split(".", 1)[1]) if "." in text else 0
+        return {
+            "type": type(value).__name__,
+            "sign": "-" if number < 0 else ("0" if number == 0 else "+"),
+            "int_digits": len(str(int(abs(number)))),
+            "decimals": decimals,
+        }
+
+    def magnitude(key):
+        try:
+            return round(abs(float(raw_signal[key])), 4)
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    keys = sorted(LOCATION_SIGNALS, key=int)
+    same_magnitude = [
+        f"{a}~{b}"
+        for i, a in enumerate(keys)
+        for b in keys[i + 1:]
+        if magnitude(a) is not None and magnitude(a) == magnitude(b)
+    ]
+    return {
+        "signals": {k: shape(raw_signal.get(k)) for k in keys},
+        "same_magnitude": same_magnitude,
+        "sent_lat": shape(payload.get("lat")),
+        "sent_lon": shape(payload.get("lon")),
+    }
+
+
 def dump_signals(vin: str) -> int:
     """Print the raw signals (GPS redacted) and the derived state, for debugging."""
     data = run_client("direct-login-vehicle-summary", "--vin", vin)
@@ -241,6 +286,9 @@ def dump_signals(vin: str) -> int:
                 f"{CHARGE_CURRENT_THRESHOLD_A} A)": payload.get("is_charging"),
                 "power_kw (1177 x 1178)": payload.get("power"),
                 "battery_percent (1204)": raw_signal.get("1204"),
+                "location_shape (no coordinates)": describe_location(
+                    raw_signal, payload
+                ),
                 "all_signals_gps_redacted": redacted,
             },
             indent=2,
