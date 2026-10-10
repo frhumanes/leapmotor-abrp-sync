@@ -116,6 +116,8 @@ So `utc` is the snapshot time (signal `"1"`, ms; fallback `"sts"`, then now), an
 `soc` uses signal `100003` (one decimal) and falls back to `battery_percent` (`1204`,
 rounded). Signal `1200` (only present while charging, counts down) looks like minutes to
 full; ABRP has no field for it, so it is only logged.
+Position: lat/lon come from signals `3`/`2`, which are **signed**; `3725`/`3724` hold only
+the magnitude (a west longitude put the car in the Mediterranean), so they are fallbacks.
 `ext_temp` is deliberately **not** sent: Leapmotor only exposes
 interior (cabin) temperature, and feeding that as outside temp corrupts ABRP's range model.
 

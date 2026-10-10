@@ -1122,8 +1122,10 @@ def normalize_vehicle_summary(
             "last_vehicle_timestamp": signal.get("sts"),
         },
         "location": {
-            "latitude": signal.get("3725", signal.get("2190")),
-            "longitude": signal.get("3724", signal.get("2191")),
+            # "2"/"3" are signed; 3724/3725 carry only the magnitude, so west
+            # longitudes would be mirrored east of Greenwich.
+            "latitude": signal.get("3", signal.get("3725", signal.get("2190"))),
+            "longitude": signal.get("2", signal.get("3724", signal.get("2191"))),
             "privacy_gps": status_data.get("privacyGPS"),
             "privacy_data": status_data.get("privacyData"),
         },
@@ -1161,8 +1163,8 @@ def normalize_vehicle_summary(
             "climate_right_signal": "2184",
             "charge_limit_source": "config.3.percent",
             "location_signals": {
-                "longitude": "3724/2191",
-                "latitude": "3725/2190",
+                "longitude": "2 (signed)/3724/2191",
+                "latitude": "3 (signed)/3725/2190",
             },
             "tire_pressure_signals": {
                 "front_left_bar": "2667 (inferred from activity_lpcar_health.xml lf slot)",
